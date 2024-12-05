@@ -18,13 +18,15 @@ var Global_writer_end int = 0
 
 type Task func(args ...interface{}) (interface{}, error)
 
-func retry_task(task Task, args ...interface{}) interface{} {
+func retry_task(task Task, print_err bool, args ...interface{}) interface{} {
 	for {
 		result, err := task(args...)
 		if err == nil {
 			return result
 		} else {
-			fmt.Printf("Error: %v\n", err)
+			if print_err {
+				fmt.Printf("Error: %v\n", err)
+			}
 			time.Sleep(5 * time.Second)
 		}
 	}
@@ -74,7 +76,7 @@ func main() {
 			conn, err := net.Dial("tcp", args[0].(string))
 			return conn, err
 		}
-		conn := retry_task(task_net_dial, "127.0.0.1:50021").(net.Conn)
+		conn := retry_task(task_net_dial, false, "127.0.0.1:50021").(net.Conn)
 		fmt.Println("connect established")
 		for {
 			conn.Write([]byte("hello server"))
