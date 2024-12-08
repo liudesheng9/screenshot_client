@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,10 @@ func main() {
 		for {
 			s, _ := input.ReadString('\n')
 			s = strings.TrimSpace(s)
+			if Global_sig_current_run == 0 {
+				fmt.Println("ss.exe is not running")
+				continue
+			}
 			if strings.ToUpper(s) == "Q" {
 				Global_sig_lock.Lock()
 				Global_sig_run = 0
@@ -62,13 +67,41 @@ func main() {
 			if strings.ToUpper(s) == "NAN" {
 				continue
 			}
+			if strings.ToUpper(s) == "START" {
+				if Global_sig_current_run == 1 {
+					fmt.Println("ss.exe is running")
+					continue
+				}
+				// start ss.exe from os
+				fmt.Println("start ss.exe")
+				cmd := exec.Command("../screenshot/ss.exe")
+				rootdir := "../screenshot/"
+				cmd.Dir = rootdir
+				//execute cmd
+				/*
+					cmd.SysProcAttr = &syscall.SysProcAttr{
+						CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP, // Windows 下创建新进程组
+					}
+
+					cmd.Stdin = nil
+					cmd.Stdout = nil
+					cmd.Stderr = nil
+				*/
+				err := cmd.Start()
+
+				if err != nil {
+					fmt.Println("start ss.exe failed: ", err)
+					continue
+				}
+				fmt.Println("start ss.exe success")
+				continue
+
+			}
 			input_channel <- s
 		}
 	}()
 	for {
-		Global_sig_current_run_lock.Lock()
-		Global_sig_current_run = 1
-		Global_sig_current_run_lock.Unlock()
+
 		fmt.Println("Waiting for server...")
 		//connect to server
 	ini_link:
@@ -77,6 +110,9 @@ func main() {
 			return conn, err
 		}
 		conn := retry_task(task_net_dial, false, "127.0.0.1:50021").(net.Conn)
+		Global_sig_current_run_lock.Lock()
+		Global_sig_current_run = 1
+		Global_sig_current_run_lock.Unlock()
 		fmt.Println("connect established")
 		for {
 			conn.Write([]byte("hello server"))
@@ -136,7 +172,10 @@ func main() {
 						continue
 					}
 					fmt.Println("Error reading from connection:", err)
-					continue
+					Global_sig_current_run_lock.Lock()
+					Global_sig_current_run = 0
+					Global_sig_current_run_lock.Unlock()
+					return
 				}
 				fmt.Println("Get server message: ", string(buf[:n]))
 				if string(buf[:n]) == "server close" {
