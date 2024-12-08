@@ -13,7 +13,7 @@ import (
 
 var Global_sig_run int = 1
 var Global_sig_lock sync.Mutex
-var Global_sig_current_run int = 1
+var Global_sig_current_run int
 var Global_sig_current_run_lock sync.Mutex
 var Global_writer_end int = 0
 
@@ -43,6 +43,7 @@ func title_print() {
 }
 
 func main() {
+	Global_sig_current_run = 0
 	title_print()
 	input_channel := make(chan string)
 	go func() {
@@ -50,10 +51,7 @@ func main() {
 		for {
 			s, _ := input.ReadString('\n')
 			s = strings.TrimSpace(s)
-			if Global_sig_current_run == 0 {
-				fmt.Println("ss.exe is not running")
-				continue
-			}
+
 			if strings.ToUpper(s) == "Q" {
 				Global_sig_lock.Lock()
 				Global_sig_run = 0
@@ -96,6 +94,11 @@ func main() {
 				fmt.Println("start ss.exe success")
 				continue
 
+			}
+
+			if Global_sig_current_run == 0 { // must at last!
+				fmt.Println("ss.exe is not running")
+				continue
 			}
 			input_channel <- s
 		}
