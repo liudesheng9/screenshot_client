@@ -42,6 +42,118 @@ func title_print() {
 	fmt.Println("CLIENT")
 }
 
+func readLine(reader *bufio.Reader) (string, error) {
+	s, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(s), nil
+}
+
+func dialWithRetry(address string, attempts int, delay time.Duration) (net.Conn, error) {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		conn, err := net.DialTimeout("tcp", address, 5*time.Second)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		time.Sleep(delay)
+	}
+	return nil, lastErr
+}
+
+func sendCommandAndWait(conn net.Conn, cmd string) (string, error) {
+	_, err := conn.Write([]byte(cmd))
+	if err != nil {
+		return "", err
+	}
+	for {
+		var buf [4096]byte
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		n, err := conn.Read(buf[:])
+		if err != nil {
+			if opErr, ok := err.(net.Error); ok && opErr.Timeout() {
+				continue
+			}
+			return "", err
+		}
+		return strings.TrimSpace(string(buf[:n])), nil
+	}
+}
+
+func runExportFlow(reader *bufio.Reader) {
+	fmt.Println("EXPORT mode: enter a time range or Q to exit.")
+	conn, err := dialWithRetry("127.0.0.1:50024", 5, 2*time.Second)
+	if err != nil {
+		fmt.Println("connect failed:", err)
+		return
+	}
+	defer conn.Close()
+
+	resp, err := sendCommandAndWait(conn, "hello server")
+	if err != nil {
+		fmt.Println("handshake failed:", err)
+		return
+	}
+	if strings.TrimSpace(resp) != "1" {
+		fmt.Println("server not ready:", resp)
+		return
+	}
+
+	for {
+		fmt.Print("Time range (YYYYMMDDHHMM-HHMM) or Q to exit: ")
+		rangeInput, err := readLine(reader)
+		if err != nil {
+			fmt.Println("read failed:", err)
+			return
+		}
+		if strings.EqualFold(rangeInput, "Q") {
+			return
+		}
+		if rangeInput == "" {
+			continue
+		}
+
+		countResp, err := sendCommandAndWait(conn, "img count "+rangeInput)
+		if err != nil {
+			fmt.Println("img count failed:", err)
+			continue
+		}
+		fmt.Println(countResp)
+
+		fmt.Print("Copy these images? (Y/N, Q to exit): ")
+		answer, err := readLine(reader)
+		if err != nil {
+			fmt.Println("read failed:", err)
+			return
+		}
+		if strings.EqualFold(answer, "Q") {
+			return
+		}
+		if !strings.EqualFold(answer, "Y") {
+			continue
+		}
+
+		fmt.Print("Destination dir (blank for ./img_dump): ")
+		dest, err := readLine(reader)
+		if err != nil {
+			fmt.Println("read failed:", err)
+			return
+		}
+		command := "img copy " + rangeInput
+		if strings.TrimSpace(dest) != "" {
+			command = command + " " + dest
+		}
+		copyResp, err := sendCommandAndWait(conn, command)
+		if err != nil {
+			fmt.Println("img copy failed:", err)
+			continue
+		}
+		fmt.Println(copyResp)
+	}
+}
+
 func main() {
 	Global_sig_current_run = 0
 	title_print()
@@ -95,6 +207,10 @@ func main() {
 				continue
 
 			}
+			if strings.ToUpper(s) == "EXPORT" {
+				runExportFlow(input)
+				continue
+			}
 
 			if Global_sig_current_run == 0 { // must at last!
 				fmt.Println("ss.exe is not running")
@@ -112,21 +228,28 @@ func main() {
 			conn, err := net.Dial("tcp", args[0].(string))
 			return conn, err
 		}
-		conn := retry_task(task_net_dial, false, "127.0.0.1:50021").(net.Conn)
+		conn := retry_task(task_net_dial, false, "127.0.0.1:50024").(net.Conn)
 		Global_sig_current_run_lock.Lock()
 		Global_sig_current_run = 1
 		Global_sig_current_run_lock.Unlock()
 		fmt.Println("connect established")
-		for {
+		for { // conn loop
 			conn.Write([]byte("hello server"))
 			var buf [1024]byte
 			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			n, err := conn.Read(buf[:])
 			if err != nil {
 				if opErr, ok := err.(net.Error); ok && opErr.Timeout() {
+					if Global_sig_run == 0 {
+						conn.Close()
+						return
+					}
 					continue
 				}
 				fmt.Println("Error reading from connection:", err)
+				Global_sig_current_run_lock.Lock()
+				Global_sig_current_run = 0
+				Global_sig_current_run_lock.Unlock()
 				time.Sleep(5 * time.Second)
 				goto ini_link
 			}
