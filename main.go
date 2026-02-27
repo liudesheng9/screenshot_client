@@ -82,6 +82,104 @@ func sendCommandAndWait(conn net.Conn, cmd string) (string, error) {
 	}
 }
 
+func sendCommand(conn net.Conn, cmd string) error {
+	_, err := conn.Write([]byte(cmd))
+	return err
+}
+
+func formatProgressDisplayLine(line string) (string, bool) {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) < 2 || fields[0] != "PROGRESS" {
+		return "", false
+	}
+
+	workers := make([]string, 0, len(fields)-1)
+	total := ""
+	for _, field := range fields[1:] {
+		if strings.HasPrefix(field, "W") && strings.Contains(field, ":") {
+			workers = append(workers, field)
+			continue
+		}
+		if strings.HasPrefix(field, "T:") {
+			total = strings.TrimPrefix(field, "T:")
+		}
+	}
+
+	if len(workers) == 0 && total == "" {
+		return "", false
+	}
+	if total == "" {
+		total = "0"
+	}
+	return strings.TrimSpace(strings.Join(workers, " ") + " Total:" + total), true
+}
+
+func formatDoneDisplayLine(line string) (string, bool) {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) < 2 || fields[0] != "DONE" {
+		return "", false
+	}
+
+	values := make(map[string]string)
+	for _, field := range fields[1:] {
+		kv := strings.SplitN(field, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		values[kv[0]] = kv[1]
+	}
+
+	orderedKeys := []string{"copied", "exist", "failed", "skipped", "dest"}
+	out := make([]string, 0, len(orderedKeys))
+	for _, key := range orderedKeys {
+		if value, ok := values[key]; ok {
+			out = append(out, key+"="+value)
+		}
+	}
+	if len(out) == 0 {
+		return "", false
+	}
+	return "DONE " + strings.Join(out, " "), true
+}
+
+func streamCopyResponse(conn net.Conn) error {
+	connReader := bufio.NewReader(conn)
+	timeoutCount := 0
+
+	for {
+		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		line, err := connReader.ReadString('\n')
+		if err != nil {
+			if opErr, ok := err.(net.Error); ok && opErr.Timeout() {
+				timeoutCount++
+				if timeoutCount >= 3 {
+					return fmt.Errorf("timed out waiting for img copy progress")
+				}
+				continue
+			}
+			return err
+		}
+		timeoutCount = 0
+
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if progress, ok := formatProgressDisplayLine(trimmed); ok {
+			fmt.Println(progress)
+			continue
+		}
+		if done, ok := formatDoneDisplayLine(trimmed); ok {
+			fmt.Println(done)
+			return nil
+		}
+		fmt.Println(trimmed)
+		if strings.HasPrefix(trimmed, "img error:") {
+			return nil
+		}
+	}
+}
+
 func runExportFlow(reader *bufio.Reader) {
 	fmt.Println("EXPORT mode: enter a time range or Q to exit.")
 	conn, err := dialWithRetry("127.0.0.1:50024", 5, 2*time.Second)
@@ -142,15 +240,19 @@ func runExportFlow(reader *bufio.Reader) {
 			return
 		}
 		command := "img copy " + rangeInput
+		command = command + " --stream"
 		if strings.TrimSpace(dest) != "" {
 			command = command + " " + dest
 		}
-		copyResp, err := sendCommandAndWait(conn, command)
+		err = sendCommand(conn, command)
 		if err != nil {
 			fmt.Println("img copy failed:", err)
 			continue
 		}
-		fmt.Println(copyResp)
+		if err := streamCopyResponse(conn); err != nil {
+			fmt.Println("img copy stream failed:", err)
+			continue
+		}
 	}
 }
 
